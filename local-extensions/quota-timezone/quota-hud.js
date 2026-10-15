@@ -92,12 +92,11 @@
     }
     for (const checkbox of document.querySelectorAll("input[type=checkbox]")) {
       const row = checkbox.closest("div.group");
-      if (
-        !row ||
-        !row.querySelector("[role=switch]") ||
-        row.querySelector("[data-omni-native-hud]")
-      )
+      if (!row || !row.querySelector("[role=switch]")) continue;
+      if (row.querySelector("[data-omni-native-hud]")) {
+        row.querySelectorAll("[data-omni-local-hud]").forEach((el) => el.remove());
         continue;
+      }
       const marker = [...row.querySelectorAll("span")].find((el) =>
         /^#\d+$/.test(el.textContent.trim())
       );

@@ -8,6 +8,7 @@
 import { getDbInstance } from "../db/core";
 import { getUserDatabaseSettings } from "../db/databaseSettings";
 import { calculateCost } from "./costCalculator";
+import { computeUsageAnalyticsRetentionCutoff } from "@/shared/utils/analyticsTime";
 
 interface AggregationResult {
   processed: number;
@@ -307,15 +308,9 @@ export async function getRawDataCutoffDate(): Promise<string> {
   // The raw-data cutoff MUST match the actual rollup/delete boundary used by
   // cleanupUsageHistory (src/lib/db/cleanup.ts), which is driven by
   // retention.usageHistory — NOT aggregation.rawDataRetentionDays.
-  // Using rawDataRetentionDays (default 7 per migration 046) creates a gap:
-  // analytics floors raw data at day-7 while cleanup doesn't roll up until
-  // day-30, so the window [day-30, day-7) is excluded from BOTH UNION legs.
   const rawDataRetentionDays = getUserDatabaseSettings().retention.usageHistory;
-
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - rawDataRetentionDays);
-
-  return cutoffDate.toISOString().split("T")[0];
+  const { dateStr } = computeUsageAnalyticsRetentionCutoff(rawDataRetentionDays);
+  return dateStr;
 }
 
 /**

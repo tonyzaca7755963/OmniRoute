@@ -1,4 +1,4 @@
-import { formatUsageAnalyticsDate } from "@/shared/utils/analyticsTime";
+import { computeUsageAnalyticsRetentionCutoff } from "@/shared/utils/analyticsTime";
 import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
@@ -467,8 +467,7 @@ async function computeAnalyticsResponse(
     // retention.usageHistory (src/lib/db/cleanup.ts), NOT aggregation.rawDataRetentionDays.
     const dbSettings = getUserDatabaseSettings();
     const rawRetentionDays = dbSettings.retention?.usageHistory ?? 30;
-    const rawCutoff = new Date();
-    rawCutoff.setDate(rawCutoff.getDate() - rawRetentionDays);
+    const { dateStr: rawCutoffDate } = computeUsageAnalyticsRetentionCutoff(rawRetentionDays);
 
     const conditions = [];
     const params: Record<string, string> = {};
@@ -496,7 +495,6 @@ async function computeAnalyticsResponse(
 
     // Build the UNION data source that merges recent raw rows with older aggregated history.
     // SQL is encapsulated in usageAnalytics.ts — the route only supplies filter parameters.
-    const rawCutoffDate = formatUsageAnalyticsDate(rawCutoff);
     const apiKeyParamEntries: Record<string, string> = {};
     apiKeyIds.forEach((key, i) => {
       apiKeyParamEntries[`apiKey${i}`] = key;

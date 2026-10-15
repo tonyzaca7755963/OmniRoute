@@ -1,21 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 // Setup global browser DOM environment via JSDOM
-const dom = new JSDOM("<!doctype html><html><body></body></html>");
+const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+  url: "http://localhost:20128/dashboard/providers/antigravity",
+});
 global.window = dom.window as any;
 global.document = dom.window.document;
+global.location = dom.window.location;
 Object.defineProperty(global, "navigator", {
   value: dom.window.navigator,
   configurable: true,
 });
 global.HTMLElement = dom.window.HTMLElement;
+global.MutationObserver = dom.window.MutationObserver;
+const raf = (cb: FrameRequestCallback) => setTimeout(cb, 16) as any;
+global.requestAnimationFrame = raf;
+dom.window.requestAnimationFrame = raf;
 
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
-import AntigravityQuotaHud from "../../src/app/(dashboard)/dashboard/providers/[id]/components/AntigravityQuotaHud.tsx";
+import AntigravityQuotaHud, {
+  sharedMemoryQuotaCache,
+} from "../../src/app/(dashboard)/dashboard/providers/[id]/components/AntigravityQuotaHud.tsx";
 
 test("AntigravityQuotaHud UI: renders 0%, 50%, and 100% with exact SVG strokeDasharray", () => {
   const container = document.createElement("div");
@@ -80,50 +95,43 @@ test("AntigravityQuotaHud UI: renders 0%, 50%, and 100% with exact SVG strokeDas
   container.remove();
 });
 
-test("AntigravityQuotaHud UI: reacts immediately to prop updates and connectionId switching", () => {
+test("AntigravityQuotaHud UI: connectionId switching without initialCache NEVER leaks previous account quota", async () => {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
 
-  const conn1Cache = {
-    quotas: {
-      claude_gpt_session: { remainingPercentage: 25, total: 100 },
+  // Seed shared cache for account A
+  sharedMemoryQuotaCache.set("account-A", {
+    entry: {
+      quotas: {
+        claude_gpt_session: { remainingPercentage: 37, total: 100 },
+      },
     },
-  };
-
-  act(() => {
-    root.render(<AntigravityQuotaHud connectionId="conn-1" initialCache={conn1Cache} />);
+    fetchedAtMs: Date.now(),
   });
 
-  assert.ok(container.textContent.includes("25%"));
-  assert.ok(!container.textContent.includes("85%"));
-
-  // Switch connectionId to conn-2 with different cache
-  const conn2Cache = {
-    quotas: {
-      claude_gpt_session: { remainingPercentage: 85, total: 100 },
-    },
-  };
-
+  // Render account A with no initialCache (uses polled cache -> 37%)
   act(() => {
-    root.render(<AntigravityQuotaHud connectionId="conn-2" initialCache={conn2Cache} />);
+    root.render(<AntigravityQuotaHud connectionId="account-A" initialCache={null} />);
   });
 
-  assert.ok(container.textContent.includes("85%"), "Must switch to conn-2's 85%");
-  assert.ok(!container.textContent.includes("25%"), "Must not display stale conn-1 data");
+  assert.ok(container.textContent.includes("37%"), "Account A must render 37%");
 
-  // Simulate manual refresh: same connectionId, new cache passed from parent
-  const refreshedConn2Cache = {
-    quotas: {
-      claude_gpt_session: { remainingPercentage: 92, total: 100 },
-    },
-  };
-
+  // Switch connectionId to account B which has NO initialCache and NO polled data yet
   act(() => {
-    root.render(<AntigravityQuotaHud connectionId="conn-2" initialCache={refreshedConn2Cache} />);
+    root.render(<AntigravityQuotaHud connectionId="account-B" initialCache={null} />);
   });
 
-  assert.ok(container.textContent.includes("92%"), "Must update on manual refresh");
+  // Critical regression assertion: B must NEVER show A's 37%
+  assert.ok(
+    !container.textContent.includes("37%"),
+    "Account B must NOT display account A's 37% quota"
+  );
+  assert.equal(
+    container.querySelector("[data-omni-native-hud]"),
+    null,
+    "Account B has no quota data and must render empty"
+  );
 
   act(() => {
     root.unmount();
@@ -131,66 +139,186 @@ test("AntigravityQuotaHud UI: reacts immediately to prop updates and connectionI
   container.remove();
 });
 
-test("AntigravityQuotaHud UI: coexistence with local-extensions quota-hud.js", () => {
-  // Setup HTML structure simulating provider page connection row
+test("AntigravityQuotaHud UI: manual refresh updates immediately and subsequent polled data also updates", () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  const initialPropsCache = {
+    quotas: {
+      claude_gpt_session: { remainingPercentage: 20, total: 100 },
+    },
+    fetchedAt: "2026-10-15T10:00:00.000Z",
+  };
+
+  act(() => {
+    root.render(
+      <AntigravityQuotaHud connectionId="conn-refresh" initialCache={initialPropsCache} />
+    );
+  });
+
+  assert.ok(container.textContent.includes("20%"));
+
+  // 1. Manual refresh passing newer props from parent
+  const refreshedPropsCache = {
+    quotas: {
+      claude_gpt_session: { remainingPercentage: 55, total: 100 },
+    },
+    fetchedAt: "2026-10-15T10:05:00.000Z",
+  };
+
+  act(() => {
+    root.render(
+      <AntigravityQuotaHud connectionId="conn-refresh" initialCache={refreshedPropsCache} />
+    );
+  });
+
+  assert.ok(container.textContent.includes("55%"), "Must update immediately when props refresh");
+
+  // 2. Subsequent background polled update arrives with newer timestamp
+  sharedMemoryQuotaCache.set("conn-refresh", {
+    entry: {
+      quotas: {
+        claude_gpt_session: { remainingPercentage: 88, total: 100 },
+      },
+    },
+    fetchedAtMs: new Date("2026-10-15T10:10:00.000Z").getTime(),
+  });
+
+  // Re-render
+  act(() => {
+    root.render(
+      <AntigravityQuotaHud connectionId="conn-refresh" initialCache={refreshedPropsCache} />
+    );
+  });
+
+  assert.ok(container.textContent.includes("88%"), "Newer polled cache must supersede older props");
+
+  act(() => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("AntigravityQuotaHud UI & Extension: real quota-hud.js execution, coexistence, and fallback", async () => {
+  // Read real quota-hud.js source code from disk
+  const extensionPath = path.resolve(
+    __dirname,
+    "../../local-extensions/quota-timezone/quota-hud.js"
+  );
+  const extensionScript = fs.readFileSync(extensionPath, "utf8");
+
+  // Build real DOM structure required by quota-hud.js
   const row = document.createElement("div");
   row.className = "group";
+
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   row.appendChild(checkbox);
-
-  const toggle = document.createElement("button");
-  toggle.setAttribute("role", "switch");
-  row.appendChild(toggle);
 
   const marker = document.createElement("span");
   marker.textContent = "#1";
   row.appendChild(marker);
 
-  // Mount native HUD inside the row
+  const actions = document.createElement("div");
+  const toggle = document.createElement("button");
+  toggle.setAttribute("role", "switch");
+  actions.appendChild(toggle);
+  row.appendChild(actions);
+
+  document.body.appendChild(row);
+
+  // Mock window.fetch for extension script
+  const origFetch = global.fetch;
+  global.fetch = (async (url: string) => {
+    if (url.includes("/api/providers")) {
+      return {
+        ok: true,
+        json: async () => ({
+          connections: [{ id: "acc-1", provider: "antigravity", priority: 1 }],
+        }),
+      };
+    }
+    if (url.includes("/api/usage/provider-limits")) {
+      return {
+        ok: true,
+        json: async () => ({
+          caches: {
+            "acc-1": {
+              quotas: {
+                claude_gpt_session: { remainingPercentage: 37, total: 100 },
+              },
+            },
+          },
+        }),
+      };
+    }
+    return { ok: false };
+  }) as any;
+
+  // Execute the real quota-hud.js in this window
+  // Reset window.__omniLocalQuota so script initializes cleanly
+  delete (global.window as any).__omniLocalQuota;
+  vm.runInThisContext(extensionScript);
+
+  // Wait for extension script's initial refresh() Promise to complete
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // 1. Verify extension initially injected its local HUD
+  const localHud = row.querySelector("[data-omni-local-hud]");
+  assert.ok(localHud, "Extension must inject local HUD when native is not yet present");
+
+  // 2. Now mount native React HUD into the same row
   const nativeHudWrapper = document.createElement("div");
-  row.appendChild(nativeHudWrapper);
+  row.insertBefore(nativeHudWrapper, actions);
   const root = createRoot(nativeHudWrapper);
 
   act(() => {
     root.render(
       <AntigravityQuotaHud
-        connectionId="test-id"
+        connectionId="acc-1"
         initialCache={{
           quotas: {
-            claude_gpt_session: { remainingPercentage: 60, total: 100 },
+            claude_gpt_session: { remainingPercentage: 37, total: 100 },
           },
         }}
       />
     );
   });
 
-  document.body.appendChild(row);
+  // Verify native HUD mounted
+  const nativeHud = row.querySelector("[data-omni-native-hud='antigravity']");
+  assert.ok(nativeHud, "Native HUD must be mounted");
 
-  // Verify native HUD element is present with marker
-  const nativeEl = row.querySelector("[data-omni-native-hud='antigravity']");
-  assert.ok(nativeEl, "Native HUD element must be mounted");
+  // Trigger DOM mutation / render so extension observes native HUD
+  await new Promise((resolve) => setTimeout(resolve, 60));
 
-  // Verify quota-hud.js CSS selector rule does NOT hide native HUD
-  // Selector in quota-hud.js: [data-agy-quota-hud]:not([data-omni-native-hud])
+  // 3. Verify coexistence: local HUD must be removed once native HUD is present
+  const localHudAfterNative = row.querySelector("[data-omni-local-hud]");
   assert.equal(
-    nativeEl.matches("[data-agy-quota-hud]:not([data-omni-native-hud])"),
-    false,
-    "Native HUD must not match legacy hide selector"
+    localHudAfterNative,
+    null,
+    "Extension must remove local HUD when native HUD is present"
+  );
+  assert.ok(
+    row.querySelector("[data-omni-native-hud]"),
+    "Only native HUD should remain in the row"
   );
 
-  // Verify quota-hud.js condition skips injecting duplicate local HUD when native HUD is present
-  const hasSwitch = Boolean(row.querySelector("[role=switch]"));
-  const hasNative = Boolean(row.querySelector("[data-omni-native-hud]"));
-  const shouldSkipExtensionInject = !row || !hasSwitch || hasNative;
-  assert.equal(
-    shouldSkipExtensionInject,
-    true,
-    "Extension script must skip row when native HUD is already present"
-  );
-
+  // 4. Test fallback: unmount native HUD
   act(() => {
     root.unmount();
   });
+  nativeHudWrapper.remove();
+
+  // Trigger extension render again
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // Verify local HUD is reinjected gracefully when native is gone
+  const localHudFallback = row.querySelector("[data-omni-local-hud]");
+  assert.ok(localHudFallback, "Extension must re-inject local HUD when native HUD unmounts");
+
+  // Cleanup
+  global.fetch = origFetch;
   row.remove();
 });

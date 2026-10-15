@@ -6,6 +6,7 @@
 
 import { rollupUsageHistoryBeforeDate } from "@/lib/usage/aggregateHistory";
 import { purgeCallLogArtifactDirectory } from "@/lib/usage/callLogArtifacts";
+import { computeUsageAnalyticsRetentionCutoff } from "@/shared/utils/analyticsTime";
 
 import { getDbInstance } from "./core";
 import { getUserDatabaseSettings } from "./databaseSettings";
@@ -108,10 +109,8 @@ export async function cleanupUsageHistory(): Promise<CleanupResult> {
   const retention = getRetentionSettings();
 
   const retentionDays = retention.usageHistory;
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-  const cutoffISO = cutoffDate.toISOString();
-  const cutoffDateStr = new Date(cutoffISO.split("T")[0] + "T00:00:00.000+08:00").toISOString();
+  const { cutoffIso } = computeUsageAnalyticsRetentionCutoff(retentionDays);
+  const cutoffDateStr = cutoffIso;
 
   const result: CleanupResult = { deleted: 0, errors: 0 };
 

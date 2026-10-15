@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import {
   formatUsageAnalyticsDate,
   formatUsageAnalyticsDateFromIso,
+  computeUsageAnalyticsRetentionCutoff,
 } from "../../src/shared/utils/analyticsTime.ts";
 
 import { buildUnifiedSource } from "../../src/lib/db/usageAnalytics/sources.ts";
@@ -89,4 +90,95 @@ test("CST Timezone: sources.ts buildUnifiedSource aligns cutoff to Beijing midni
 
   // untilDate should be formatted as CST date (16:30Z is next day in CST -> 2026-10-16)
   assert.equal(result.unifiedParams.untilDate, "2026-10-16");
+});
+
+test("CST Timezone: unified cutoff eliminates request loss during early morning hours", () => {
+  // Scenario: current time is 2026-10-15T18:00:00.000Z (02:00 CST on Oct 16)
+  const now = new Date("2026-10-15T18:00:00.000Z");
+  const retentionDays = 30;
+  const { dateStr: rawCutoffDate, cutoffIso } = computeUsageAnalyticsRetentionCutoff(
+    retentionDays,
+    now
+  );
+
+  assert.equal(rawCutoffDate, "2026-09-16");
+  assert.equal(cutoffIso, "2026-09-15T16:00:00.000Z");
+
+  const db = new Database(":memory:");
+  db.exec(`
+    CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      requests INTEGER DEFAULT 1,
+      tokens_input INTEGER DEFAULT 0,
+      tokens_output INTEGER DEFAULT 0,
+      tokens_cache_read INTEGER DEFAULT 0,
+      tokens_cache_creation INTEGER DEFAULT 0,
+      tokens_reasoning INTEGER DEFAULT 0,
+      stored_cost REAL DEFAULT 0,
+      service_tier TEXT DEFAULT 'standard',
+      success INTEGER DEFAULT 1,
+      latency_ms REAL,
+      connection_id TEXT,
+      account_key TEXT,
+      api_key_id TEXT,
+      api_key_name TEXT
+    );
+
+    CREATE TABLE daily_usage_summary (
+      id INTEGER PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      date TEXT NOT NULL,
+      total_requests INTEGER DEFAULT 1,
+      total_input_tokens INTEGER DEFAULT 0,
+      total_output_tokens INTEGER DEFAULT 0,
+      total_cost REAL DEFAULT 0
+    );
+  `);
+
+  // Request at 2026-09-14T17:00:00.000Z (01:00 CST on Sept 15)
+  // Since timestamp < cutoffIso (2026-09-15T16:00:00.000Z), cleanup rolls this into daily_usage_summary
+  db.prepare(
+    `
+    INSERT INTO daily_usage_summary (provider, model, date, total_requests)
+    VALUES (?, ?, ?, ?)
+  `
+  ).run("openai", "gpt-4o", "2026-09-15", 1);
+
+  // Request at 2026-09-15T17:00:00.000Z (01:00 CST on Sept 16)
+  // Since timestamp >= cutoffIso, this raw request is retained in usage_history
+  db.prepare(
+    `
+    INSERT INTO usage_history (timestamp, provider, model, requests)
+    VALUES (?, ?, ?, ?)
+  `
+  ).run("2026-09-15T17:00:00.000Z", "openai", "gpt-4o", 1);
+
+  const { unifiedSource, unifiedParams } = buildUnifiedSource({
+    sinceIso: null,
+    untilIso: null,
+    rawCutoffDate,
+  });
+
+  const query = `
+    SELECT
+      DATE(timestamp, '+8 hours') as date,
+      SUM(requests) as requests
+    FROM ${unifiedSource} AS _u
+    GROUP BY DATE(timestamp, '+8 hours')
+    ORDER BY date ASC
+  `;
+
+  const rows = db.prepare(query).all(unifiedParams);
+
+  assert.equal(rows.length, 2, "Both pre-cutoff and post-cutoff requests must be returned");
+  assert.equal(rows[0].date, "2026-09-15");
+  assert.equal(rows[0].requests, 1);
+  assert.equal(rows[1].date, "2026-09-16");
+  assert.equal(rows[1].requests, 1);
+
+  db.close();
 });

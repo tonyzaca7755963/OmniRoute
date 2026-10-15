@@ -17,6 +17,48 @@ export interface AntigravityQuotaHudProps {
   initialCache?: ProviderQuotaCacheEntry | null;
 }
 
+// Module-level shared cache & request registry to prevent duplicate network calls
+// across multiple account rows and strictly isolate caches by connectionId.
+export const sharedMemoryQuotaCache = new Map<
+  string,
+  { entry: ProviderQuotaCacheEntry; fetchedAtMs: number }
+>();
+export const cacheSubscribers = new Set<(connId: string) => void>();
+let inFlightFetch: Promise<void> | null = null;
+
+export function triggerSharedFetch(): Promise<void> {
+  if (inFlightFetch) return inFlightFetch;
+
+  inFlightFetch = (async () => {
+    try {
+      const res = await fetch("/api/usage/provider-limits", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.caches && typeof data.caches === "object") {
+        const now = Date.now();
+        for (const [id, val] of Object.entries(data.caches)) {
+          if (val && typeof val === "object") {
+            sharedMemoryQuotaCache.set(id, {
+              entry: val as ProviderQuotaCacheEntry,
+              fetchedAtMs: now,
+            });
+            cacheSubscribers.forEach((cb) => cb(id));
+          }
+        }
+      }
+    } catch {
+      // Ignore background fetch errors
+    } finally {
+      inFlightFetch = null;
+    }
+  })();
+
+  return inFlightFetch;
+}
+
 export function formatCountdown(value: string | number | null | undefined): string | null {
   if (!value) return null;
   const ms = new Date(value).getTime() - Date.now();
@@ -248,42 +290,48 @@ export default function AntigravityQuotaHud({
   connectionId,
   initialCache,
 }: AntigravityQuotaHudProps) {
-  const [polledCache, setPolledCache] = useState<ProviderQuotaCacheEntry | null>(null);
+  const [, setVersion] = useState(0);
 
-  // Background fallback fetcher: only polls if initialCache is missing or stale,
-  // and isolates responses to the active connectionId to avoid cross-account clobbering.
   useEffect(() => {
-    let alive = true;
-    const currentConnId = connectionId;
-
-    const fetchQuota = async () => {
-      try {
-        const res = await fetch("/api/usage/provider-limits", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (alive && connectionId === currentConnId && data?.caches?.[connectionId]) {
-          setPolledCache(data.caches[connectionId]);
-        }
-      } catch {
-        // Ignore fetch errors
+    const onCacheUpdate = (updatedConnId: string) => {
+      if (updatedConnId === connectionId) {
+        setVersion((v) => v + 1);
       }
     };
+    cacheSubscribers.add(onCacheUpdate);
 
-    if (!initialCache || !initialCache.quotas) {
-      fetchQuota();
+    // If neither initialCache nor sharedMemoryQuotaCache has quotas for this connectionId, trigger shared fetch
+    if (!initialCache?.quotas && !sharedMemoryQuotaCache.has(connectionId)) {
+      triggerSharedFetch();
     }
 
-    const timer = setInterval(fetchQuota, 60000);
+    const timer = setInterval(() => {
+      triggerSharedFetch();
+    }, 60000);
+
     return () => {
-      alive = false;
+      cacheSubscribers.delete(onCacheUpdate);
       clearInterval(timer);
     };
   }, [connectionId, initialCache]);
 
-  const activeCache = initialCache ?? polledCache;
+  // Derived active cache: strictly isolates by connectionId
+  const sharedEntry = sharedMemoryQuotaCache.get(connectionId);
+  let activeCache: ProviderQuotaCacheEntry | null = null;
+
+  if (initialCache && sharedEntry) {
+    if (!initialCache.quotas && sharedEntry.entry.quotas) {
+      activeCache = sharedEntry.entry;
+    } else {
+      const initialMs = initialCache.fetchedAt ? new Date(initialCache.fetchedAt).getTime() : 0;
+      activeCache = sharedEntry.fetchedAtMs > initialMs ? sharedEntry.entry : initialCache;
+    }
+  } else if (sharedEntry) {
+    activeCache = sharedEntry.entry;
+  } else if (initialCache) {
+    activeCache = initialCache;
+  }
+
   const items = extractQuotaItems(activeCache);
   if (!items.length) return null;
 

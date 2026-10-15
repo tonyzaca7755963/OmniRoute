@@ -1,4 +1,4 @@
-import { formatUsageAnalyticsDate } from "@/shared/utils/analyticsTime";
+import { computeUsageAnalyticsRetentionCutoff } from "@/shared/utils/analyticsTime";
 import { NextResponse } from "next/server";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { buildUnifiedSource, getProviderDailyUsageRows } from "@/lib/db/usageAnalytics";
@@ -81,10 +81,9 @@ function resolveDateWindow(searchParams: URLSearchParams, range: string): DateWi
 async function resolveRawCutoffDate(): Promise<string> {
   const { getUserDatabaseSettings } = await import("@/lib/db/databaseSettings");
   const dbSettings = getUserDatabaseSettings();
-  const rawRetentionDays = dbSettings.aggregation?.rawDataRetentionDays ?? 30;
-  const rawCutoff = new Date();
-  rawCutoff.setDate(rawCutoff.getDate() - rawRetentionDays);
-  return formatUsageAnalyticsDate(rawCutoff);
+  const rawRetentionDays = dbSettings.retention?.usageHistory ?? 30;
+  const { dateStr } = computeUsageAnalyticsRetentionCutoff(rawRetentionDays);
+  return dateStr;
 }
 
 function errorResponse(error: unknown): Promise<Response> {

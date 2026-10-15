@@ -30,3 +30,36 @@ export function formatUsageAnalyticsDateFromIso(value: string | null | undefined
   if (Number.isNaN(date.getTime())) return value.split("T", 1)[0] || null;
   return formatUsageAnalyticsDate(date);
 }
+
+/**
+ * Returns the ISO string corresponding to 00:00:00.000 in China Standard Time (UTC+8)
+ * for a given date string "YYYY-MM-DD".
+ */
+export function getUsageAnalyticsCstMidnightIso(dateStr: string): string {
+  return new Date(`${dateStr}T00:00:00.000+08:00`).toISOString();
+}
+
+/**
+ * Computes a consistent retention cutoff boundary aligned to China Standard Time (UTC+8).
+ * Ensures that cleanup deletion, rollup aggregation, and analytics unified queries
+ * share the exact same boundary at all hours (including Beijing early morning 00:00-08:00).
+ *
+ * @param retentionDays - Retention window in days (e.g. 30)
+ * @param now - Reference timestamp (defaults to current time)
+ * @returns { dateStr: string, cutoffIso: string }
+ *   - dateStr: Calendar day in CST (YYYY-MM-DD)
+ *   - cutoffIso: UTC ISO string corresponding to 00:00:00.000 CST of dateStr
+ */
+export function computeUsageAnalyticsRetentionCutoff(
+  retentionDays: number,
+  now: Date = new Date()
+): { dateStr: string; cutoffIso: string } {
+  const todayCst = formatUsageAnalyticsDate(now);
+  const midnightTodayCst = new Date(`${todayCst}T00:00:00.000+08:00`);
+  const cutoffDate = new Date(midnightTodayCst.getTime());
+  cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+  const dateStr = formatUsageAnalyticsDate(cutoffDate);
+  const cutoffIso = getUsageAnalyticsCstMidnightIso(dateStr);
+  return { dateStr, cutoffIso };
+}
