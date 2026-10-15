@@ -82,6 +82,12 @@ test("abort finish reasons still pass through raw, not collapsed to stop", () =>
   assert.equal(normalizeOpenAICompatibleFinishReason("unexpected_tool_call"), "unexpected_tool_call");
 });
 
+test("empty and whitespace strings normalize to null", () => {
+  assert.equal(normalizeOpenAICompatibleFinishReason(""), null);
+  assert.equal(normalizeOpenAICompatibleFinishReason("   "), null);
+  assert.equal(normalizeOpenAICompatibleFinishReason("\t\n"), null);
+});
+
 test("non-string input returns as-is", () => {
   assert.equal(normalizeOpenAICompatibleFinishReason(null), null);
   assert.equal(normalizeOpenAICompatibleFinishReason(undefined), undefined);

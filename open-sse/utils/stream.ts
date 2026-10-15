@@ -2017,6 +2017,9 @@ export function createSSEStream(options: StreamOptions = {}) {
                   // Typed content-part arrays are folded into strings by
                   // sanitizeStreamingChunk, so the raw line must not be forwarded.
                   const hadArrayContent = Array.isArray(rawDelta?.content);
+                  const rawFinishReasons = Array.isArray(parsed.choices)
+                    ? parsed.choices.map((c: Record<string, unknown> | null | undefined) => c?.finish_reason)
+                    : null;
 
                   if (!projectedFailure) {
                     parsed = sanitizeStreamingChunk(parsed);
@@ -2029,6 +2032,16 @@ export function createSSEStream(options: StreamOptions = {}) {
                       continue;
                     }
                   }
+
+                  const hadNormalizedFinishReason =
+                    rawFinishReasons !== null &&
+                    Array.isArray(parsed?.choices) &&
+                    parsed.choices.some(
+                      (c: Record<string, unknown> | null | undefined, idx: number) => {
+                        const rawFr = rawFinishReasons[idx];
+                        return rawFr !== undefined && c?.finish_reason !== rawFr;
+                      }
+                    );
 
                   const restoredOpenAIToolName = restoreOpenAIToolNames(parsed, toolNameMap);
                   const idFixed = hadNonStringTopLevelId ? false : fixInvalidId(parsed);
@@ -2088,6 +2101,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                   // upstream delta did not already carry.
                   const needsReserialization =
                     hadArrayContent ||
+                    hadNormalizedFinishReason ||
                     splitMixedReasoningContent ||
                     thinkParsed ||
                     hadReasoningAlias ||
