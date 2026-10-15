@@ -1,22 +1,23 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import type { ProviderQuotaCacheEntry } from "../hooks/useProviderQuota";
 
-interface QuotaItem {
+export interface QuotaItem {
   type: "claude" | "gemini";
   title: string;
-  sessionPct: number;
+  sessionPct: number | null;
   weeklyPct: number | null;
   sessionCountdown: string | null;
   weeklyCountdown: string | null;
 }
 
-interface AntigravityQuotaHudProps {
+export interface AntigravityQuotaHudProps {
   connectionId: string;
-  initialCache?: any;
+  initialCache?: ProviderQuotaCacheEntry | null;
 }
 
-function formatCountdown(value: string | number | null | undefined): string | null {
+export function formatCountdown(value: string | number | null | undefined): string | null {
   if (!value) return null;
   const ms = new Date(value).getTime() - Date.now();
   if (!Number.isFinite(ms)) return null;
@@ -26,46 +27,112 @@ function formatCountdown(value: string | number | null | undefined): string | nu
   return hours > 0 ? `${hours}h ${mins % 60}m` : `${mins}m`;
 }
 
-function extractQuotaItems(cache: any): QuotaItem[] {
-  if (!cache || !cache.quotas) return [];
+/**
+ * Computes SVG strokeDasharray to light up exactly `activeTicks` out of `totalTicks` (20).
+ * Circumference C ≈ 100.531 (r=16).
+ * Tick length = 3.3, Gap length ≈ 1.7265.
+ *
+ * For k=0: returns "0 1000" (no visible tick).
+ * For k=20: returns "3.3 1.7265" (all 20 ticks lit).
+ * For 0 < k < 20: repeats "3.3 1.7265" for k-1 ticks, then "3.3 1000", leaving the rest unlit.
+ */
+export function getTickDashArray(activeTicks: number, totalTicks = 20, tick = 3.3): string {
+  const C = 2 * Math.PI * 16;
+  const gap = Number(((C - totalTicks * tick) / totalTicks).toFixed(4));
+
+  if (activeTicks <= 0) return "0 1000";
+  if (activeTicks >= totalTicks) return `${tick} ${gap}`;
+
+  const parts: (number | string)[] = [];
+  for (let i = 0; i < activeTicks - 1; i++) {
+    parts.push(tick, gap);
+  }
+  parts.push(tick, 1000);
+  return parts.join(" ");
+}
+
+/**
+ * Extracts quota items for Claude Code and Gemini families.
+ * Priority:
+ * 1. Dedicated family session keys (claude_gpt_session, gemini_session) win over single model keys.
+ * 2. If no family session key exists, falls back to model quotas (sonnet / pro-high).
+ * 3. Dedicated weekly keys (claude_gpt_weekly, gemini_weekly, or weekly patterns).
+ * 4. If only weekly quota exists (session is absent), the family is still returned with sessionPct=null.
+ */
+export function extractQuotaItems(cache: any): QuotaItem[] {
+  if (!cache || !cache.quotas || typeof cache.quotas !== "object") return [];
   const entries = Object.entries(cache.quotas).map(([name, data]: [string, any]) => ({
-    ...data,
+    ...(typeof data === "object" && data !== null ? data : {}),
     name,
   }));
 
   const items: QuotaItem[] = [];
 
   for (const family of ["claude", "gemini"] as const) {
-    const candidates = entries.filter((q) => q.name.toLowerCase().includes(family));
-    const weekly = candidates.find((q) => /weekly|seven_day|7d/i.test(q.name));
-    const current = candidates
-      .filter((q) => !/weekly|seven_day|7d/i.test(q.name))
-      .sort((a, b) => {
-        const preferred = family === "claude" ? /sonnet/i : /pro-high/i;
-        return Number(preferred.test(b.name)) - Number(preferred.test(a.name));
-      })[0];
+    const candidates = entries.filter((q) =>
+      (family === "claude" ? /claude/i : /gemini/i).test(q.name)
+    );
+    if (!candidates.length) continue;
+
+    // 1. Identify weekly window
+    const weekly = candidates.find((q) =>
+      family === "claude"
+        ? /claude.*weekly|claude_gpt_weekly/i.test(q.name) || /weekly|seven_day|7d/i.test(q.name)
+        : /gemini.*weekly|gemini_weekly/i.test(q.name) || /weekly|seven_day|7d/i.test(q.name)
+    );
+
+    // 2. Identify session window — prioritize explicit family session keys first!
+    const nonWeekly = candidates.filter(
+      (q) => q !== weekly && !/weekly|seven_day|7d/i.test(q.name)
+    );
+
+    const explicitFamilySession = nonWeekly.find((q) =>
+      family === "claude"
+        ? /^claude_gpt_session$/i.test(q.name) || /^claude.*session$/i.test(q.name)
+        : /^gemini_session$/i.test(q.name) || /^gemini.*session$/i.test(q.name)
+    );
+
+    // Fallback to model keys if explicit family session key is absent
+    const fallbackModel = nonWeekly.slice().sort((a, b) => {
+      const preferred = family === "claude" ? /sonnet/i : /pro-high/i;
+      return Number(preferred.test(b.name)) - Number(preferred.test(a.name));
+    })[0];
+
+    const current = explicitFamilySession || fallbackModel;
 
     if (!current && !weekly) continue;
 
-    let percent = current?.remainingPercentage;
-    if (typeof percent !== "number" && current?.total > 0) {
-      percent = ((current.total - (current.used || 0)) / current.total) * 100;
+    let sessionPercent: number | null = null;
+    if (current) {
+      let rawPercent = current.remainingPercentage;
+      if (typeof rawPercent !== "number" && current.total > 0) {
+        rawPercent = ((current.total - (current.used || 0)) / current.total) * 100;
+      }
+      if (typeof rawPercent === "number" && Number.isFinite(rawPercent)) {
+        sessionPercent = Math.max(0, Math.min(100, Math.round(rawPercent)));
+      }
     }
 
-    if (!Number.isFinite(percent)) continue;
+    let weeklyPercent: number | null = null;
+    if (weekly) {
+      let rawWeekly = weekly.remainingPercentage;
+      if (typeof rawWeekly !== "number" && weekly.total > 0) {
+        rawWeekly = ((weekly.total - (weekly.used || 0)) / weekly.total) * 100;
+      }
+      if (typeof rawWeekly === "number" && Number.isFinite(rawWeekly)) {
+        weeklyPercent = Math.max(0, Math.min(100, Math.round(rawWeekly)));
+      }
+    }
 
-    const sessionPct = Math.max(0, Math.min(100, Math.round(percent)));
-    const weeklyPct =
-      typeof weekly?.remainingPercentage === "number"
-        ? Math.max(0, Math.min(100, Math.round(weekly.remainingPercentage)))
-        : null;
+    // Keep item if either session or weekly is available
+    if (sessionPercent === null && weeklyPercent === null) continue;
 
     items.push({
       type: family,
       title: family === "claude" ? "Claude Code" : "Gemini",
-      sessionPct,
-      weeklyPct,
-      sessionCountdown: formatCountdown(current?.resetAt),
+      sessionPct: sessionPercent,
+      weeklyPct: weeklyPercent,
+      sessionCountdown: current ? formatCountdown(current.resetAt) : null,
       weeklyCountdown: weekly ? formatCountdown(weekly.resetAt) : null,
     });
   }
@@ -73,12 +140,15 @@ function extractQuotaItems(cache: any): QuotaItem[] {
   return items;
 }
 
-function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
+export function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
   const isClaude = item.type === "claude";
   const weeklyText = item.weeklyPct === null ? "—" : `${item.weeklyPct}%`;
-  const circumference = 2 * Math.PI * 16;
-  const activeTicks = Math.round((item.sessionPct / 100) * 20);
-  const strokeDashoffset = ((20 - activeTicks) / 20) * circumference;
+  const sessionText = item.sessionPct === null ? "—" : `${item.sessionPct}%`;
+
+  // Display percentage for circular HUD: session percent if present, else fallback to weekly
+  const displayPct = item.sessionPct ?? item.weeklyPct ?? 0;
+  const activeTicks = Math.round((displayPct / 100) * 20);
+  const strokeDashArray = getTickDashArray(activeTicks, 20, 3.3);
 
   const theme = isClaude
     ? {
@@ -98,7 +168,7 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
         highlightText: "text-cyan-600 dark:text-cyan-400 font-bold",
       };
 
-  const tooltip = `${item.title} 全量额度\n━━━━━━━━━━━━━━━━━━━━\n• 当前额度 (HUD表盘): ${item.sessionPct}% ${
+  const tooltip = `${item.title} 全量额度\n━━━━━━━━━━━━━━━━━━━━\n• 当前额度 (HUD表盘): ${sessionText} ${
     item.sessionCountdown ? `(⏱ 重置: ${item.sessionCountdown})` : ""
   }\n• 每周总额度: ${weeklyText} ${
     item.weeklyCountdown ? `(⏱ 重置: ${item.weeklyCountdown})` : ""
@@ -115,6 +185,7 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
     >
       <div className="relative w-11 h-11 flex items-center justify-center shrink-0">
         <svg className="w-11 h-11" viewBox="0 0 40 40" style={{ transform: "rotate(-90deg)" }}>
+          {/* Background circle: all 20 tick markers in faint neutral color */}
           <circle
             cx="20"
             cy="20"
@@ -123,8 +194,9 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
             stroke="currentColor"
             className="text-black/15 dark:text-white/20"
             strokeWidth="3.2"
-            strokeDasharray="3.3 1.7"
+            strokeDasharray="3.3 1.7265"
           />
+          {/* Active colored circle: strictly lights up `activeTicks` dashes */}
           <circle
             cx="20"
             cy="20"
@@ -132,8 +204,7 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
             fill="none"
             stroke={theme.activeTickColor}
             strokeWidth="3.2"
-            strokeDasharray="3.3 1.7"
-            strokeDashoffset={strokeDashoffset}
+            strokeDasharray={strokeDashArray}
             strokeLinecap="round"
           />
         </svg>
@@ -141,7 +212,7 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
           className={`absolute text-xs font-black font-mono tracking-tighter ${theme.centerText}`}
           style={{ color: theme.activeTickColor }}
         >
-          {item.sessionPct}%
+          {item.sessionPct !== null ? `${item.sessionPct}%` : weeklyText}
         </span>
       </div>
 
@@ -150,13 +221,11 @@ function AntigravityQuotaGauge({ item }: { item: QuotaItem }) {
           <span className={`text-[12px] font-bold tracking-tight ${theme.titleText}`}>
             {item.title}
           </span>
-          <span className="text-[10px] text-text-muted font-mono font-medium">
-            周:{weeklyText}
-          </span>
+          <span className="text-[10px] text-text-muted font-mono font-medium">周:{weeklyText}</span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <span className="text-[10px] text-text-muted font-mono">
-            当前: <span className={theme.highlightText}>{item.sessionPct}%</span>
+            当前: <span className={theme.highlightText}>{sessionText}</span>
           </span>
           {item.sessionCountdown ? (
             <span className="text-[10px] font-mono text-text-muted opacity-85 tracking-tight font-medium">
@@ -179,10 +248,14 @@ export default function AntigravityQuotaHud({
   connectionId,
   initialCache,
 }: AntigravityQuotaHudProps) {
-  const [cache, setCache] = useState<any>(initialCache);
+  const [polledCache, setPolledCache] = useState<ProviderQuotaCacheEntry | null>(null);
 
+  // Background fallback fetcher: only polls if initialCache is missing or stale,
+  // and isolates responses to the active connectionId to avoid cross-account clobbering.
   useEffect(() => {
     let alive = true;
+    const currentConnId = connectionId;
+
     const fetchQuota = async () => {
       try {
         const res = await fetch("/api/usage/provider-limits", {
@@ -191,15 +264,15 @@ export default function AntigravityQuotaHud({
         });
         if (!res.ok) return;
         const data = await res.json();
-        if (alive && data?.caches?.[connectionId]) {
-          setCache(data.caches[connectionId]);
+        if (alive && connectionId === currentConnId && data?.caches?.[connectionId]) {
+          setPolledCache(data.caches[connectionId]);
         }
       } catch {
         // Ignore fetch errors
       }
     };
 
-    if (!cache || !cache.quotas) {
+    if (!initialCache || !initialCache.quotas) {
       fetchQuota();
     }
 
@@ -208,14 +281,15 @@ export default function AntigravityQuotaHud({
       alive = false;
       clearInterval(timer);
     };
-  }, [connectionId, cache]);
+  }, [connectionId, initialCache]);
 
-  const items = extractQuotaItems(cache);
+  const activeCache = initialCache ?? polledCache;
+  const items = extractQuotaItems(activeCache);
   if (!items.length) return null;
 
   return (
     <div
-      data-agy-quota-hud="native"
+      data-omni-native-hud="antigravity"
       className="flex items-center gap-2.5 flex-wrap ms-auto me-3 my-0.5"
     >
       {items.map((item) => (
