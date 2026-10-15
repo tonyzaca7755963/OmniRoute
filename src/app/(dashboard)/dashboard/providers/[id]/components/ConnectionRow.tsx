@@ -29,6 +29,7 @@ import {
   supportsProviderQuota,
 } from "@/shared/utils/providerQuotaVisibility";
 import ProviderQuotaVisibilityToggle from "./ProviderQuotaVisibilityToggle";
+import AntigravityQuotaHud from "./AntigravityQuotaHud";
 
 // ---------------------------------------------------------------------------
 // Types (exported so the client can reference them without re-importing)
@@ -912,6 +913,16 @@ export default function ConnectionRow({
           </div>
         </div>
       </div>
+      {Boolean(
+        (connection.provider === "antigravity" || connection.provider === "agy") &&
+          quotaVisible &&
+          connection.id
+      ) && (
+        <AntigravityQuotaHud
+          connectionId={connection.id!}
+          initialCache={quotaCache}
+        />
+      )}
       <div className="flex items-center gap-2">
         <ConnectionTestButton
           connectionId={connection.id}

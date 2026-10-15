@@ -111,7 +111,7 @@ export async function cleanupUsageHistory(): Promise<CleanupResult> {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
   const cutoffISO = cutoffDate.toISOString();
-  const cutoffDateStr = cutoffISO.split("T")[0];
+  const cutoffDateStr = new Date(cutoffISO.split("T")[0] + "T00:00:00.000+08:00").toISOString();
 
   const result: CleanupResult = { deleted: 0, errors: 0 };
 

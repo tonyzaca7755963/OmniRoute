@@ -99,7 +99,7 @@ function buildUsageSourceSql(aggregationEnabled: boolean) {
       COALESCE(service_tier, 'standard') as service_tier,
       1 as request_count
     FROM usage_history
-    WHERE DATE(timestamp) >= ?
+    WHERE DATE(timestamp, '+8 hours') >= ?
 
     UNION ALL
 

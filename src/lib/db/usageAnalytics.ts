@@ -100,13 +100,13 @@ export function getDailyUsage(unifiedSource: string, params: AnalyticsParams): D
     .prepare(
       `
       SELECT
-        DATE(timestamp) as date,
+        DATE(timestamp, '+8 hours') as date,
         COALESCE(SUM(requests), 0) as requests,
         COALESCE(SUM(tokens_input), 0) as promptTokens,
         COALESCE(SUM(tokens_output), 0) as completionTokens,
         COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
       FROM ${unifiedSource} AS _u
-      GROUP BY DATE(timestamp)
+      GROUP BY DATE(timestamp, '+8 hours')
       ORDER BY date ASC
     `
     )
@@ -138,7 +138,7 @@ export function getDailyCostRows(unifiedSource: string, params: AnalyticsParams)
     .prepare(
       `
       SELECT
-        DATE(timestamp) as date,
+        DATE(timestamp, '+8 hours') as date,
         LOWER(provider) as provider,
         LOWER(model) as model,
         COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
@@ -150,7 +150,7 @@ export function getDailyCostRows(unifiedSource: string, params: AnalyticsParams)
         COALESCE(SUM(stored_cost), 0.0) as storedCost,
         MAX(is_aggregated) as isAggregated
       FROM ${unifiedSource} AS _u
-      GROUP BY DATE(timestamp), LOWER(provider), LOWER(model), serviceTier
+      GROUP BY DATE(timestamp, '+8 hours'), LOWER(provider), LOWER(model), serviceTier
       ORDER BY date ASC
     `
     )
@@ -178,11 +178,11 @@ export function getHeatmapRows(heatmapConditions: string[], params: AnalyticsPar
     .prepare(
       `
       SELECT
-        DATE(timestamp) as date,
+        DATE(timestamp, '+8 hours') as date,
         COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
       FROM usage_history
       WHERE ${heatmapConditions.join(" AND ")}
-      GROUP BY DATE(timestamp)
+      GROUP BY DATE(timestamp, '+8 hours')
       ORDER BY date ASC
     `
     )
@@ -237,7 +237,7 @@ export function getModelUsageRows(unifiedSource: string, params: AnalyticsParams
       -- Keep cost inputs separated by day. Historical provider rows do not
       -- always use one cache-token convention, and computeCostFromPricing's
       -- non-cached-input clamp is intentionally non-linear across those rows.
-      GROUP BY DATE(timestamp), LOWER(model), LOWER(provider), serviceTier
+      GROUP BY DATE(timestamp, '+8 hours'), LOWER(model), LOWER(provider), serviceTier
       ORDER BY requests DESC
     `
     )
@@ -282,7 +282,7 @@ export function getProviderCostRows(
         COALESCE(SUM(stored_cost), 0.0) as storedCost,
         MAX(is_aggregated) as isAggregated
       FROM ${unifiedSource} AS _u
-      GROUP BY DATE(timestamp), LOWER(provider), LOWER(model), serviceTier
+      GROUP BY DATE(timestamp, '+8 hours'), LOWER(provider), LOWER(model), serviceTier
     `
     )
     .all(params) as ProviderCostRow[];
@@ -532,7 +532,7 @@ export function getApiKeyUsageRows(
         COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
       FROM usage_history
       ${apiKeyWhereClause}
-      GROUP BY DATE(timestamp), COALESCE(NULLIF(api_key_id, ''), NULLIF(api_key_name, ''), 'unknown'), NULLIF(api_key_id, ''), LOWER(provider), LOWER(model), serviceTier
+      GROUP BY DATE(timestamp, '+8 hours'), COALESCE(NULLIF(api_key_id, ''), NULLIF(api_key_name, ''), 'unknown'), NULLIF(api_key_id, ''), LOWER(provider), LOWER(model), serviceTier
     `
     )
     .all(params) as ApiKeyUsageRow[];
@@ -581,7 +581,7 @@ export function getServiceTierUsageRows(
         COALESCE(SUM(stored_cost), 0.0) as storedCost,
         MAX(is_aggregated) as isAggregated
       FROM ${unifiedSource} AS _u
-      GROUP BY DATE(timestamp), serviceTier, LOWER(provider), LOWER(model)
+      GROUP BY DATE(timestamp, '+8 hours'), serviceTier, LOWER(provider), LOWER(model)
     `
     )
     .all(params) as ServiceTierUsageRow[];
@@ -651,12 +651,12 @@ export function getWeeklyPatternRows(
         COALESCE(SUM(totalTokens), 0) as totalTokens
       FROM (
         SELECT
-          DATE(timestamp) as date,
-          strftime('%w', timestamp) as dayOfWeek,
+          DATE(timestamp, '+8 hours') as date,
+          strftime('%w', timestamp, '+8 hours') as dayOfWeek,
           COALESCE(SUM(requests), 0) as requests,
           COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
         FROM ${unifiedSource} AS _u
-        GROUP BY DATE(timestamp), strftime('%w', timestamp)
+        GROUP BY DATE(timestamp, '+8 hours'), strftime('%w', timestamp, '+8 hours')
       )
       GROUP BY dayOfWeek
       ORDER BY dayOfWeek ASC
@@ -704,7 +704,7 @@ export function getPresetCostModelRows(
         COALESCE(SUM(stored_cost), 0.0) as storedCost,
         MAX(is_aggregated) as isAggregated
       FROM ${presetUnifiedSource} AS _pu
-      GROUP BY DATE(timestamp), LOWER(model), LOWER(provider), serviceTier
+      GROUP BY DATE(timestamp, '+8 hours'), LOWER(model), LOWER(provider), serviceTier
     `
     )
     .all(params) as PresetCostModelRow[];
@@ -812,14 +812,14 @@ export function getProviderDailyUsageRows(
     .prepare(
       `
       SELECT
-        DATE(timestamp) as date,
+        DATE(timestamp, '+8 hours') as date,
         LOWER(provider) as provider,
         COUNT(*) as requests,
         COALESCE(SUM(tokens_input), 0) as promptTokens,
         COALESCE(SUM(tokens_output), 0) as completionTokens,
         COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
       FROM ${unifiedSource} AS _u
-      GROUP BY DATE(timestamp), LOWER(provider)
+      GROUP BY DATE(timestamp, '+8 hours'), LOWER(provider)
       ORDER BY date DESC, requests DESC
     `
     )

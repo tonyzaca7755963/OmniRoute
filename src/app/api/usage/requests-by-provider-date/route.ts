@@ -64,7 +64,10 @@ interface DateWindow {
 function resolveDateWindow(searchParams: URLSearchParams, range: string): DateWindow {
   const singleDate = searchParams.get("date") || undefined;
   if (singleDate) {
-    return { sinceIso: `${singleDate}T00:00:00.000Z`, untilIso: `${singleDate}T23:59:59.999Z` };
+    return {
+      sinceIso: new Date(`${singleDate}T00:00:00.000+08:00`).toISOString(),
+      untilIso: new Date(`${singleDate}T23:59:59.999+08:00`).toISOString(),
+    };
   }
   const startDate = searchParams.get("startDate") || undefined;
   const endDate = searchParams.get("endDate") || undefined;

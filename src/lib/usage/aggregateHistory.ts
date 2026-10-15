@@ -42,14 +42,14 @@ export async function rollupDailyUsage(
       SELECT 
         provider,
         COALESCE(json_extract(raw_data, '$.model'), 'unknown') as model,
-        DATE(created_at) as date,
+        DATE(created_at, '+8 hours') as date,
         COUNT(*) as total_requests,
         COALESCE(SUM(CAST(json_extract(raw_data, '$.input_tokens') AS INTEGER)), 0) as total_input_tokens,
         COALESCE(SUM(CAST(json_extract(raw_data, '$.output_tokens') AS INTEGER)), 0) as total_output_tokens,
         COALESCE(SUM(CAST(json_extract(raw_data, '$.cost') AS REAL)), 0.0) as total_cost
       FROM quota_snapshots
-      WHERE DATE(created_at) >= ? AND DATE(created_at) <= ?
-      GROUP BY provider, model, DATE(created_at)
+      WHERE DATE(created_at, '+8 hours') >= ? AND DATE(created_at, '+8 hours') <= ?
+      GROUP BY provider, model, DATE(created_at, '+8 hours')
       ON CONFLICT(provider, model, date) DO UPDATE SET
         total_requests = excluded.total_requests,
         total_input_tokens = excluded.total_input_tokens,
@@ -158,7 +158,7 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
         `SELECT
           LOWER(provider) as provider,
           LOWER(model) as model,
-          DATE(timestamp) as date,
+          DATE(timestamp, '+8 hours') as date,
           COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
           COUNT(*) as totalRequests,
           COALESCE(tokens_input, 0) as requestInputTokens,
@@ -175,7 +175,7 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
         WHERE timestamp < ?
           AND provider IS NOT NULL AND provider != ''
           AND model IS NOT NULL AND model != ''
-        GROUP BY LOWER(provider), LOWER(model), DATE(timestamp), serviceTier,
+        GROUP BY LOWER(provider), LOWER(model), DATE(timestamp, '+8 hours'), serviceTier,
           requestInputTokens, requestOutputTokens, requestCacheReadTokens,
           requestCacheCreationTokens, requestReasoningTokens`
       )
