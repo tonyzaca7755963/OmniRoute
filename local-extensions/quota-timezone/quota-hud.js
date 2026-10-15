@@ -163,7 +163,7 @@
     return state.pending;
   }
   let queued = false;
-  new MutationObserver((records) => {
+  const observer = new MutationObserver((records) => {
     if (
       records.every((r) => r.target.nodeType === 1 && r.target.closest?.("[data-omni-local-hud]"))
     )
@@ -175,12 +175,22 @@
         render();
       });
     }
-  }).observe(document.body, { childList: true, subtree: true });
-  setInterval(() => {
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  const pollTimer = setInterval(() => {
     if (document.visibilityState === "visible") {
       if (Date.now() - state.last >= 60000) refresh();
       else render();
     }
   }, 5000);
+  if (typeof pollTimer === "object" && typeof pollTimer?.unref === "function") {
+    pollTimer.unref();
+  }
+
+  // Store handles for clean test teardown & lifecycle management
+  window.__omniLocalQuota.observer = observer;
+  window.__omniLocalQuota.pollTimer = pollTimer;
+
   refresh();
 })();

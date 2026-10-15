@@ -26,6 +26,15 @@ export const sharedMemoryQuotaCache = new Map<
 export const cacheSubscribers = new Set<(connId: string) => void>();
 let inFlightFetch: Promise<void> | null = null;
 
+export function parseCacheTimestampMs(entry?: ProviderQuotaCacheEntry | null): number {
+  if (!entry) return 0;
+  if (typeof entry.fetchedAt === "string") {
+    const ms = new Date(entry.fetchedAt).getTime();
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return 0;
+}
+
 export function triggerSharedFetch(): Promise<void> {
   if (inFlightFetch) return inFlightFetch;
 
@@ -41,9 +50,23 @@ export function triggerSharedFetch(): Promise<void> {
         const now = Date.now();
         for (const [id, val] of Object.entries(data.caches)) {
           if (val && typeof val === "object") {
+            const entry = val as ProviderQuotaCacheEntry;
+            const entryMs = parseCacheTimestampMs(entry);
+            const existing = sharedMemoryQuotaCache.get(id);
+
+            // Refuse regression: do not let an older cached payload overwrite a newer one!
+            if (
+              existing &&
+              existing.fetchedAtMs > 0 &&
+              entryMs > 0 &&
+              entryMs < existing.fetchedAtMs
+            ) {
+              continue;
+            }
+
             sharedMemoryQuotaCache.set(id, {
-              entry: val as ProviderQuotaCacheEntry,
-              fetchedAtMs: now,
+              entry,
+              fetchedAtMs: entryMs || now,
             });
             cacheSubscribers.forEach((cb) => cb(id));
           }
@@ -323,8 +346,17 @@ export default function AntigravityQuotaHud({
     if (!initialCache.quotas && sharedEntry.entry.quotas) {
       activeCache = sharedEntry.entry;
     } else {
-      const initialMs = initialCache.fetchedAt ? new Date(initialCache.fetchedAt).getTime() : 0;
-      activeCache = sharedEntry.fetchedAtMs > initialMs ? sharedEntry.entry : initialCache;
+      const initialMs = parseCacheTimestampMs(initialCache);
+      const sharedMs = sharedEntry.fetchedAtMs || parseCacheTimestampMs(sharedEntry.entry);
+
+      // If both have timestamps, the fresher data wins; otherwise initialCache takes precedence
+      if (sharedMs > 0 && initialMs > 0) {
+        activeCache = sharedMs > initialMs ? sharedEntry.entry : initialCache;
+      } else if (sharedMs > 0) {
+        activeCache = sharedEntry.entry;
+      } else {
+        activeCache = initialCache;
+      }
     }
   } else if (sharedEntry) {
     activeCache = sharedEntry.entry;

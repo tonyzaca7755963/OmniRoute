@@ -181,6 +181,7 @@ test("AntigravityQuotaHud UI: manual refresh updates immediately and subsequent 
       quotas: {
         claude_gpt_session: { remainingPercentage: 88, total: 100 },
       },
+      fetchedAt: "2026-10-15T10:10:00.000Z",
     },
     fetchedAtMs: new Date("2026-10-15T10:10:00.000Z").getTime(),
   });
@@ -194,6 +195,70 @@ test("AntigravityQuotaHud UI: manual refresh updates immediately and subsequent 
 
   assert.ok(container.textContent.includes("88%"), "Newer polled cache must supersede older props");
 
+  act(() => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("AntigravityQuotaHud UI: delayed older responses do NOT clobber fresher initialCache", async () => {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  const nowMs = Date.now();
+  // 1. Fresher initialCache: fetched 1 second ago, 90% quota
+  const fresherInitialCache = {
+    quotas: {
+      claude_gpt_session: { remainingPercentage: 90, total: 100 },
+    },
+    fetchedAt: new Date(nowMs - 1000).toISOString(),
+  };
+
+  act(() => {
+    root.render(<AntigravityQuotaHud connectionId="race-A" initialCache={fresherInitialCache} />);
+  });
+  assert.ok(container.textContent.includes("90%"), "Initially renders fresher 90%");
+
+  // 2. Mock GET responds with older data (fetched 2 minutes ago, 10% quota)
+  const origFetch = global.fetch;
+  global.fetch = (async (url: string) => {
+    if (url.includes("/api/usage/provider-limits")) {
+      return {
+        ok: true,
+        json: async () => ({
+          caches: {
+            "race-A": {
+              quotas: {
+                claude_gpt_session: { remainingPercentage: 10, total: 100 },
+              },
+              fetchedAt: new Date(nowMs - 120000).toISOString(),
+            },
+          },
+        }),
+      };
+    }
+    return { ok: false };
+  }) as any;
+
+  // Trigger shared fetch (simulates delayed background arrival)
+  const { triggerSharedFetch } =
+    await import("../../src/app/(dashboard)/dashboard/providers/[id]/components/AntigravityQuotaHud.tsx");
+  await triggerSharedFetch();
+
+  // Re-render with fresher initialCache
+  act(() => {
+    root.render(<AntigravityQuotaHud connectionId="race-A" initialCache={fresherInitialCache} />);
+  });
+
+  // Assert regression is blocked: 90% remains visible, older 10% was rejected!
+  assert.ok(
+    container.textContent.includes("90%"),
+    "Fresher initialCache (90%) must NOT be overwritten by delayed older poll (10%)"
+  );
+  assert.ok(!container.textContent.includes("10%"), "Delayed older response must be discarded");
+
+  global.fetch = origFetch;
   act(() => {
     root.unmount();
   });
@@ -321,4 +386,12 @@ test("AntigravityQuotaHud UI & Extension: real quota-hud.js execution, coexisten
   // Cleanup
   global.fetch = origFetch;
   row.remove();
+
+  if ((global.window as any)?.__omniLocalQuota?.pollTimer) {
+    clearInterval((global.window as any).__omniLocalQuota.pollTimer);
+  }
+  if ((global.window as any)?.__omniLocalQuota?.observer) {
+    (global.window as any).__omniLocalQuota.observer.disconnect();
+  }
+  dom.window.close();
 });
