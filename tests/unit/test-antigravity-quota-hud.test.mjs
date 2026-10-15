@@ -5,6 +5,7 @@ import {
   extractQuotaItems,
   getTickDashArray,
   formatCountdown,
+  parseCacheTimestampMs,
 } from "../../src/app/(dashboard)/dashboard/providers/[id]/components/AntigravityQuotaHud.tsx";
 
 test("extractQuotaItems: prioritizes family session keys over specific model quotas", () => {
@@ -86,6 +87,24 @@ test("getTickDashArray: accurately lights up 0, 10, and 20 ticks", () => {
 
   const twentyTicks = getTickDashArray(20, 20, 3.3);
   assert.equal(twentyTicks, "3.3 1.7265", "100% must have full continuous tick/gap repetition");
+});
+
+test("parseCacheTimestampMs parses ISO strings, numbers, and Date objects robustly", () => {
+  assert.equal(parseCacheTimestampMs(null), 0);
+  assert.equal(parseCacheTimestampMs(undefined), 0);
+  assert.equal(parseCacheTimestampMs({}), 0);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: "" }), 0);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: "invalid" }), 0);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: -100 }), 0);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: NaN }), 0);
+
+  const iso = "2026-10-15T10:00:00.000Z";
+  const expectedMs = new Date(iso).getTime();
+  assert.equal(parseCacheTimestampMs({ fetchedAt: iso }), expectedMs);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: expectedMs }), expectedMs);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: Math.round(expectedMs / 1000) }), expectedMs);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: new Date(expectedMs) }), expectedMs);
+  assert.equal(parseCacheTimestampMs({ fetchedAt: String(expectedMs) }), expectedMs);
 });
 
 test("formatCountdown: parses valid dates and labels negative or zero as '待刷新'", () => {

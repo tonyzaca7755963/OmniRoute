@@ -27,11 +27,29 @@ export const cacheSubscribers = new Set<(connId: string) => void>();
 let inFlightFetch: Promise<void> | null = null;
 
 export function parseCacheTimestampMs(entry?: ProviderQuotaCacheEntry | null): number {
-  if (!entry) return 0;
-  if (typeof entry.fetchedAt === "string") {
-    const ms = new Date(entry.fetchedAt).getTime();
-    if (Number.isFinite(ms) && ms > 0) return ms;
+  if (!entry || typeof entry !== "object") return 0;
+  const raw = (entry as Record<string, unknown>).fetchedAt;
+  if (!raw) return 0;
+
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return raw < 1e11 ? Math.round(raw * 1000) : Math.round(raw);
   }
+
+  if (raw instanceof Date) {
+    const ms = raw.getTime();
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  }
+
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return 0;
+    if (/^\d{10}$/.test(trimmed)) return Number(trimmed) * 1000;
+    if (/^\d{13}$/.test(trimmed)) return Number(trimmed);
+    const ms = Date.parse(trimmed);
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  }
+
   return 0;
 }
 
@@ -47,26 +65,26 @@ export function triggerSharedFetch(): Promise<void> {
       if (!res.ok) return;
       const data = await res.json();
       if (data?.caches && typeof data.caches === "object") {
-        const now = Date.now();
         for (const [id, val] of Object.entries(data.caches)) {
           if (val && typeof val === "object") {
             const entry = val as ProviderQuotaCacheEntry;
             const entryMs = parseCacheTimestampMs(entry);
             const existing = sharedMemoryQuotaCache.get(id);
 
-            // Refuse regression: do not let an older cached payload overwrite a newer one!
+            // Refuse regression:
+            // 1. If existing entry has a valid timestamp, do not allow an older or un-timestamped payload to overwrite it.
+            // 2. If timestamps are identical, skip to avoid redundant subscriber notifications.
             if (
               existing &&
               existing.fetchedAtMs > 0 &&
-              entryMs > 0 &&
-              entryMs < existing.fetchedAtMs
+              (entryMs === 0 || entryMs <= existing.fetchedAtMs)
             ) {
               continue;
             }
 
             sharedMemoryQuotaCache.set(id, {
               entry,
-              fetchedAtMs: entryMs || now,
+              fetchedAtMs: entryMs,
             });
             cacheSubscribers.forEach((cb) => cb(id));
           }
@@ -339,27 +357,42 @@ export default function AntigravityQuotaHud({
   }, [connectionId, initialCache]);
 
   // Derived active cache: strictly isolates by connectionId
+  const initialMs = parseCacheTimestampMs(initialCache);
   const sharedEntry = sharedMemoryQuotaCache.get(connectionId);
+
+  // Sync initialCache into sharedMemoryQuotaCache if it has quotas and is fresher
+  if (
+    initialCache?.quotas &&
+    (!sharedEntry ||
+      !sharedEntry.entry.quotas ||
+      (initialMs > 0 && initialMs > (sharedEntry.fetchedAtMs || 0)))
+  ) {
+    sharedMemoryQuotaCache.set(connectionId, {
+      entry: initialCache,
+      fetchedAtMs: initialMs,
+    });
+  }
+
+  const currentShared = sharedMemoryQuotaCache.get(connectionId);
   let activeCache: ProviderQuotaCacheEntry | null = null;
 
-  if (initialCache && sharedEntry) {
-    if (!initialCache.quotas && sharedEntry.entry.quotas) {
-      activeCache = sharedEntry.entry;
+  if (initialCache && currentShared) {
+    if (!initialCache.quotas && currentShared.entry.quotas) {
+      activeCache = currentShared.entry;
     } else {
-      const initialMs = parseCacheTimestampMs(initialCache);
-      const sharedMs = sharedEntry.fetchedAtMs || parseCacheTimestampMs(sharedEntry.entry);
+      const sharedMs = currentShared.fetchedAtMs || parseCacheTimestampMs(currentShared.entry);
 
       // If both have timestamps, the fresher data wins; otherwise initialCache takes precedence
       if (sharedMs > 0 && initialMs > 0) {
-        activeCache = sharedMs > initialMs ? sharedEntry.entry : initialCache;
+        activeCache = sharedMs > initialMs ? currentShared.entry : initialCache;
       } else if (sharedMs > 0) {
-        activeCache = sharedEntry.entry;
+        activeCache = currentShared.entry;
       } else {
         activeCache = initialCache;
       }
     }
-  } else if (sharedEntry) {
-    activeCache = sharedEntry.entry;
+  } else if (currentShared) {
+    activeCache = currentShared.entry;
   } else if (initialCache) {
     activeCache = initialCache;
   }
