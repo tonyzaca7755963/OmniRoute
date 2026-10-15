@@ -1,0 +1,1 @@
+module.exports={getHeatmapRows:"SELECT DATE(timestamp), strftime('%w', timestamp) FROM usage_history"}

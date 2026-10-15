@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0",
+  "live_hud_accounts": 21,
+  "live_weekly_accounts": 21,
+  "legacy_hud_count": 0,
+  "live_usage_analytics_http": 200,
+  "live_weekly_quota_http": 200,
+  "runtime_weekly_modules": 5,
+  "runtime_timezone_modules": 3,
+  "timezone": "Asia/Shanghai",
+  "utc8_midnight_boundary": "pass",
+  "simulated_upgrade_renamed_module": "pass",
+  "official_fixture_bytes_unchanged": "pass",
+  "html_injection": "pass",
+  "sse_passthrough": "pass",
+  "actual_official_upgrade": "not_performed",
+  "legacyExclusion": {
+    "frontendVersion": "1.0.1",
+    "ordinaryReload": true,
+    "simulatedCachedLegacyNodes": 21,
+    "visibleLegacyNodes": 0,
+    "localAccountHuds": 21,
+    "visibleGauges": 42,
+    "weeklyLabels": 42,
+    "rowHeightPx": 93,
+    "horizontalOverflow": false,
+    "screenshot": "legacy-exclusion-live.png"
+  }
+}

@@ -68,7 +68,7 @@ function getConcurrency(): number {
 
 function toPacificTime(date: Date): Date {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
+    timeZone: process.env.OMNIROUTE_WARMUP_TIMEZONE || "Asia/Shanghai",
     hour12: false,
     hourCycle: "h23",
     year: "numeric",
